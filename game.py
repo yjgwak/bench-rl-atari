@@ -2,6 +2,8 @@ import cv2
 import gym
 import numpy as np
 from tensorflow.python.framework.tensor_spec import BoundedTensorSpec, TensorSpec
+from tf_agents.trajectories.time_step import TimeStep
+from tf_agents.typing.types import Tensor
 
 ENV_NAME = 'BreakoutDeterministic-v4'
 
@@ -40,6 +42,9 @@ class GameEnvironment:
     def action_spec(self):
         return BoundedTensorSpec(shape=(), dtype=self.env.action_space.dtype,
                                  minimum=0, maximum=self.env.action_space.n-1)
+
+    # def time_step_spec(self):
+    #     return TimeStep(step_type=Tensor, reward=)
 
 
 def process_frame(frame, shape=(84, 84)):

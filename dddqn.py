@@ -1,11 +1,12 @@
 import tensorflow as tf
+from tensorflow import TensorSpec
 from tensorflow.keras import Input
 from tensorflow.keras.layers import Conv2D, Flatten, Dense
 from tensorflow.keras.models import Model
 from tensorflow.python.keras.layers import LSTM
 from tensorflow.python.keras.losses import Huber
 from tensorflow.python.keras.optimizer_v2.adam import Adam
-import numpy as np
+from tf_agents.replay_buffers.tf_uniform_replay_buffer import TFUniformReplayBuffer
 
 
 def build_q(n_actions, input_shape=(84, 84)):
@@ -29,16 +30,26 @@ def build_q(n_actions, input_shape=(84, 84)):
     return model
 
 
-class ReplayBuffer:
-    def __init__(self, size=int(1e5), input_shape=(84, 84)):
-        self.size = size
-        self.input_shape = input_shape
-        self.count = 0
-        self.current = 0
+class ReplayBuffer(TFUniformReplayBuffer):
+    def __init__(self, **kwargs):
+        super(ReplayBuffer, self).__init__(**kwargs)
 
-        # Allocate Memory
-        self.actions = np.empty(self.size, dtype=np.uint8)
-        self.rewards = np.empty(self.size, dtype=np.float32)
-        self.frames = np.empty((self.size, *self.input_shape), dtype=np.uint8)
-        self.terminal_falgs = np.empty(self.size, dtype=np.bool)
 
+class Agent:
+    def __init__(self):
+        rb = ReplayBuffer(data_spec=data_spec, batch_size=batch_size, max_length=int(1e5))
+
+
+    def learn(self):
+        pass
+
+
+if __name__ == "__main__":
+    data_spec = (
+        TensorSpec((), dtype=tf.uint8, name='action'),
+        TensorSpec((), dtype=tf.float32, name='reward'),
+        TensorSpec((84, 84), dtype=tf.uint8, name='frame'),
+        TensorSpec((), dtype=tf.bool, name='terminal_flag')
+    )
+
+    batch_size = 32
