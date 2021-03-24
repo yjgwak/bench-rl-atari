@@ -1,9 +1,10 @@
-import random
 import cv2
 import gym
 import numpy as np
+from tensorflow.python.framework.tensor_spec import BoundedTensorSpec, TensorSpec
 
 ENV_NAME = 'BreakoutDeterministic-v4'
+
 
 class GameEnvironment:
     def __init__(self, env_name):
@@ -32,6 +33,13 @@ class GameEnvironment:
             self.env.render()
 
         return self.state, reward, terminal, life_lost
+
+    def observation_spec(self):
+        return TensorSpec(shape=self.env.observation_space.shape, dtype=self.env.observation_space.dtype)
+
+    def action_spec(self):
+        return BoundedTensorSpec(shape=(), dtype=self.env.action_space.dtype,
+                                 minimum=0, maximum=self.env.action_space.n-1)
 
 
 def process_frame(frame, shape=(84, 84)):
