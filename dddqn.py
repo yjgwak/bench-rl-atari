@@ -10,6 +10,7 @@ import numpy as np
 
 def build_q(n_actions, input_shape=(84, 84)):
     frame = Input(shape=input_shape)
+
     x = ((frame / 255.) - 0.5) * 2
     x = Conv2D(32, (8, 8), strides=4, activation='relu')(x)
     x = Conv2D(64, (4, 4), strides=2, activation='relu')(x)
@@ -40,5 +41,5 @@ class ReplayBuffer:
         self.actions = np.empty(self.size, dtype=np.uint8)
         self.rewards = np.empty(self.size, dtype=np.float32)
         self.frames = np.empty((self.size, *self.input_shape), dtype=np.uint8)
-        self.terminal_falgs = np.empty(self.size, dtype=np.bool)
+        self.terminal flags = np.empty(self.size, dtype=np.bool)
 
