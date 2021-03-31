@@ -24,14 +24,14 @@ def tf_env_step(action):  # tf.Tensor) -> List[tf.Tensor]:
 
 class ActorCritic(tf.keras.Model):
     def __init__(self, param: dict, action_range):
-        super(ActorCritic, self).__init__()
+        super().__init__()
 
         self.actor_pre = tf.keras.Sequential([
             Dense(param['actor'][0], activation='relu'),
             Dense(param['actor'][1], activation='relu')
         ])
         self.mu = Dense(param['actor'][2])
-        self.sigma = Dense(param['actor'][3])
+        self.sigma = Dense(param['actor'][3], activation='relu')
 
         self.critic = tf.keras.Sequential([
             Dense(param['critic'][0], activation='relu'),
@@ -58,32 +58,32 @@ def train_step(initial_state: tf.Tensor,
     rewards = tf.TensorArray(dtype=tf.float32, size=0, dynamic_size=True)
 
     state = initial_state
+    state = tf.expand_dims(state, 0)
     gamma = 0.99
 
     for t in tf.range(max_steps):
-        state = tf.squeeze(state)
-        state = tf.expand_dims(state, 0)
-
         with tf.GradientTape() as tape:
             action, value, norm = model(state)
-
             norm = norm[0, 0]
 
             state, reward, done = tf_env_step(action[0])
-            state = tf.squeeze(state)
+
             state = tf.expand_dims(state, 0)
             _, next_value, _ = model(state)
 
-            target = tf.expand_dims(tf.expand_dims(reward, 0), 0) + gamma * next_value
-            td_error = target - value
+            target = reward + gamma * next_value[0, 0]
+            td_error = target - value[0, 0]
 
-            loss_actor = -tf.math.log(norm.prob(action) + eps) * td_error
+            action_log_prob = tf.math.log(tf.clip_by_value(norm.prob(action[0, 0]), eps, 1.0))
+            loss_actor = -action_log_prob * td_error
             loss_critic = huber_loss(value, target)
+            # loss = loss_critic
             loss = loss_actor + loss_critic
 
         grads = tape.gradient(loss, model.trainable_variables)
         optimizer.apply_gradients(zip(grads, model.trainable_variables))
-        rewards = rewards.write(t, reward)
+
+        losses = losses.write(t, norm.mean())
 
         if tf.cast(done, tf.bool):
             break
@@ -100,12 +100,12 @@ if __name__ == "__main__":
     action_range = [env.action_space.low.item(), env.action_space.high.item()]
     model = ActorCritic(layer_param, action_range)
 
-    optimizer = Adam(learning_rate=0.001)
+    optimizer = Adam(learning_rate=0.000001)
     huber_loss = Huber(reduction=tf.keras.losses.Reduction.SUM)
 
     # Training loop
     gamma = 0.99  # discount factor
-    max_episodes = 300
+    max_episodes = 100
     running_reward = 0
     with tqdm.trange(max_episodes) as t:
         for i in t:
