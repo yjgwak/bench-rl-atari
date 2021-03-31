@@ -138,14 +138,12 @@ def train_step(
         max_steps_per_episode: int) -> tf.Tensor:
 
     with tf.GradientTape() as tape:
-
         action_probs, values, rewards = run_episde(
             initial_state, model, max_steps_per_episode)
 
         returns = get_expected_return(rewards, gamma)
 
-        action_probs, values, returns = [
-            tf.expand_dims(x, 1) for x in [action_probs, values, returns]]
+        action_probs, values, returns = [tf.expand_dims(x, 1) for x in [action_probs, values, returns]]
 
         loss = compute_loss(action_probs, values, returns)
 
@@ -154,29 +152,24 @@ def train_step(
     optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
     episode_reward = tf.math.reduce_sum(rewards)
-
     return episode_reward
 
 max_episodes = 10000
 max_steps_per_episode = 1000
 reward_threshold = 195
-running_reward = 0
-
 gamma = 0.99
+
+running_reward = 0
 
 with tqdm.trange(max_episodes) as t:
     for i in t:
         initial_state = tf.constant(env.reset(), dtype=tf.float32)
-        episode_reward = int(
-            train_step(initial_state, model, optimizer, gamma, max_steps_per_episode))
+        episode_reward = int(train_step(initial_state, model, optimizer, gamma, max_steps_per_episode))
 
         running_reward = episode_reward*0.01 + running_reward * .99
+
         t.set_description(f'Episode {i}')
         t.set_postfix(episode_reward=episode_reward, running_reward=running_reward)
-
-        if i % 10 == 0:
-            pass
-
         if running_reward > reward_threshold:
             break
 
