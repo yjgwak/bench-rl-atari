@@ -7,48 +7,76 @@ from tensorflow.python.keras.losses import Huber
 from tensorflow.python.keras.optimizer_v2.adam import Adam
 import tensorflow_probability as tfp
 
+
 env = gym.make("MountainCarContinuous-v0")
+
+seed = 42
+env.seed(seed)
+tf.random.set_seed(seed)
+np.random.seed()
+
 eps = np.finfo(np.float32).eps.item()
 
 
-def env_step(action):  # np.ndarray):# -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def env_step(action): # np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     state, reward, done, _ = env.step(action)
     return (state.astype(np.float32),
             np.array(reward, np.float32),
             np.array(done, np.int32))
 
 
-def tf_env_step(action):  # tf.Tensor) -> List[tf.Tensor]:
+def tf_env_step(action): # tf.Tensor) -> List[tf.Tensor]:
     return tf.numpy_function(env_step, [action], [tf.float32, tf.float32, tf.int32])
 
 
+class Actor(tf.keras.Model):
+    def __init__(self, params, action_range):
+        super().__init__()
+        self.seq = tf.keras.Sequential([Dense(p, activation='relu') for p in params])
+        self.mean = Dense(1)
+        self.stddev = Dense(1, activation='softplus')
+        self.action_range = action_range
+
+    def call(self, inputs, **kwargs):
+        x = self.seq(inputs)
+        n = tfp.distributions.Normal(self.mean(x), self.stddev(x))
+        action = tf.clip_by_value(n.sample(1), *self.action_range)
+        action_log_prob = n.log_prob(action)
+        return action, action_log_prob
+
+
+class Critic(tf.keras.Model):
+    def __init__(self, params):
+        super().__init__()
+        self.seq = tf.keras.Sequential([Dense(p, activation='relu') for p in params])
+        self.critic = Dense(1)
+
+    def call(self, inputs, **kwargs):
+        x = self.seq(inputs)
+        return self.critic(x)
+
+
 class ActorCritic(tf.keras.Model):
-    def __init__(self, param: dict, action_range):
+    def __init__(self, action_range):
         super().__init__()
 
-        self.actor_pre = tf.keras.Sequential([
-            Dense(param['actor'][0], activation='relu'),
-            Dense(param['actor'][1], activation='relu')
+        self.common = tf.keras.Sequential([
+            Dense(128, activation='relu')
         ])
-        self.mu = Dense(param['actor'][2])
-        self.sigma = Dense(param['actor'][3], activation='softplus')
-
-        self.critic = tf.keras.Sequential([
-            Dense(param['critic'][0], activation='relu'),
-            Dense(param['critic'][1], activation='relu'),
-            Dense(param['critic'][2])
-        ])
+        self.mu = Dense(1)
+        self.sigma = Dense(1, activation='softplus')
+        self.critic = Dense(1)
 
         self.action_range = action_range
 
     def call(self, inputs, **kwargs):
-        x = self.actor_pre(inputs)
-        normal_dist = tfp.distributions.Normal(self.mu(x), self.sigma(x) + eps)
-        action_norm = tf.squeeze(normal_dist.sample(1), axis=0)
-        action_clipped = tf.clip_by_value(action_norm, *self.action_range)
-        action_prob = tf.clip_by_value(normal_dist.prob(action_clipped), eps, 1.0)
+        x = self.common(inputs)
+        n = tfp.distributions.Normal(self.mu(x), self.sigma(x))
+        action = tf.clip_by_value(n.sample(1), *self.action_range)
+        action_log_prob = n.log_prob(action)
 
-        return action_clipped, action_prob, self.critic(inputs)
+        return action, action_log_prob, self.critic(x)
+
 
 def get_expected_return(
         rewards: tf.Tensor,
@@ -75,76 +103,72 @@ def get_expected_return(
 
 
 def train_step(initial_state: tf.Tensor,
-               model: tf.keras.Model,
-               optimizer: tf.keras.optimizers.Optimizer):
+               actor: tf.keras.Model,
+               critic: tf.keras.Model,
+               opt1: tf.keras.optimizers.Optimizer,
+               opt2: tf.keras.optimizers.Optimizer):
 
     max_steps = int(1e8)
-    gamma = 0.99
+    rewards = tf.TensorArray(dtype=tf.float32, size=0, dynamic_size=True)
 
-    huber_loss = Huber(reduction=tf.keras.losses.Reduction.SUM)
-
-    with tf.GradientTape() as tape:
-        action_probs = tf.TensorArray(dtype=tf.float32, size=0, dynamic_size=True)
-        values = tf.TensorArray(dtype=tf.float32, size=0, dynamic_size=True)
-        rewards = tf.TensorArray(dtype=tf.float32, size=0, dynamic_size=True)
-
-        state = initial_state
-        for t in tf.range(max_steps):
+    state = initial_state
+    for t in tf.range(max_steps):
+        with tf.GradientTape(persistent=True) as tape:
+            # Run
             state = tf.expand_dims(tf.squeeze(state), 0)
-            action, action_prob, value = model(state)
-
-            values = values.write(t, tf.squeeze(value))
-
-            action_probs = action_probs.write(t, tf.squeeze(action_prob))
-
+            action, action_log_prob = actor(state)
+            value = critic(state)
             state, reward, done = tf_env_step(action)
 
-            rewards = rewards.write(t, reward)
+            # return(advantage), Q, TD
+            state = tf.expand_dims(tf.squeeze(state), 0)
+            next_value = critic(state)
 
-            if tf.cast(done, tf.bool):
-                break
+            loss_actor, loss_critic = calc_loss(action_log_prob, next_value, reward, value)
 
-        action_probs = action_probs.stack()
-        values = values.stack()
-        rewards = rewards.stack()
+        grads = tape.gradient(loss_actor, actor.trainable_variables)
+        opt1.apply_gradients(zip(grads, actor.trainable_variables))
+        grads = tape.gradient(loss_critic, critic.trainable_variables)
+        opt2.apply_gradients(zip(grads, critic.trainable_variables))
 
-        returns = get_expected_return(rewards, gamma)
+        rewards = rewards.write(t, reward)
+        del tape
+        if tf.cast(done, tf.bool):
+            break
 
-        action_probs, values, returns = [tf.expand_dims(x, 1) for x in [action_probs, values, returns]]
-
-        advantages = returns - values
-        action_log_probs = tf.math.log(action_probs)
-        loss_actor = -tf.math.reduce_sum(action_log_probs * advantages)
-        loss_critic = huber_loss(value, returns)
-        loss = loss_actor + loss_critic
-
-    grads = tape.gradient(loss, model.trainable_variables)
-
-    optimizer.apply_gradients(zip(grads, model.trainable_variables))
-
+    rewards = rewards.stack()
     episode_reward = tf.math.reduce_sum(rewards)
 
     return episode_reward
 
 
-if __name__ == "__main__":
+def calc_loss(action_log_prob, next_value, reward, value):
+    target = reward + 0.99 * next_value  # r +\gamma * V(s_{t+1})
+    td1_error = target - value
+    loss_actor = -tf.math.reduce_sum(action_log_prob * td1_error)
+    loss_critic = tf.keras.losses.MeanSquaredError()(value, target)
+    return loss_actor, loss_critic
 
-    layer_param = {'actor': [40, 40, 1, 1], 'critic': [400, 400, 1]}
-
+def main():
     action_range = [env.action_space.low.item(), env.action_space.high.item()]
-    model = ActorCritic(layer_param, action_range)
-
-    optimizer = Adam(learning_rate=0.000001)
-
+    actor = Actor([128], action_range)
+    critic = Critic([128])
+    # model = ActorCritic(action_range)
     # Training loop
-    gamma = 0.99  # discount factor
+
     max_episodes = 100
     running_reward = 0
+    opt1 = Adam(learning_rate=0.001)
+    opt2 = Adam(learning_rate=0.001)
+
     with tqdm.trange(max_episodes) as t:
         for i in t:
             initial_state = tf.constant(env.reset(), dtype=tf.float32)
-            episode_reward = float(train_step(initial_state, model, optimizer))
+            episode_reward = float(train_step(initial_state, actor, critic, opt1, opt2))
             running_reward = episode_reward * .01 + running_reward * .99
-
             t.set_description(f'Episode {i}')
             t.set_postfix(episode_reward=episode_reward, running_reward=running_reward)
+
+
+if __name__ == "__main__":
+    main()

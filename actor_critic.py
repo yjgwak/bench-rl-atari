@@ -17,6 +17,28 @@ np.random.seed()
 eps = np.finfo(np.float32).eps.item()
 
 
+class Actor(tf.keras.Model):
+    def __init__(self, num_actions: int, num_hidden_units: int):
+        super(Actor, self).__init__()
+        self.common = layers.Dense(num_hidden_units, activation="relu")
+        self.actor = layers.Dense(num_actions)
+
+    def call(self, inputs):
+        x = self.common(inputs)
+        return self.actor(x)
+
+
+class Critic(tf.keras.Model):
+    def __init__(self, num_hidden_units: int):
+        super(Critic, self).__init__()
+        self.common = layers.Dense(num_hidden_units, activation="relu")
+        self.critic = layers.Dense(1)
+
+    def call(self, inputs):
+        x = self.common(inputs)
+        return self.critic(x)
+
+
 class ActorCritic(tf.keras.Model):
     def __init__(self,
                  num_actions: int,
@@ -34,7 +56,6 @@ class ActorCritic(tf.keras.Model):
 num_actions = env.action_space.n # 2
 num_hidden_units = 128
 
-model = ActorCritic(num_actions, num_hidden_units)
 
 
 def env_step(action: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -51,7 +72,8 @@ def tf_env_step(action: tf.Tensor) -> List[tf.Tensor]:
 
 def run_episde(
         initial_state: tf.Tensor,
-        model: tf.keras.Model,
+        actor: tf.keras.Model,
+        critic: tf.keras.Model,
         max_steps: int) -> List[tf.Tensor]:
 
     action_probs = tf.TensorArray(dtype=tf.float32, size=0, dynamic_size=True)
@@ -63,7 +85,8 @@ def run_episde(
 
     for t in tf.range(max_steps):
         state = tf.expand_dims(state, 0)
-        action_logits_t, value = model(state)
+        action_logits_t = actor(state)
+        value = critic(state)
 
         action = tf.random.categorical(action_logits_t, 1)[0, 0]
         action_probs_t = tf.nn.softmax(action_logits_t)
@@ -114,7 +137,7 @@ def get_expected_return(
 huber_loss = tf.keras.losses.Huber(reduction=tf.keras.losses.Reduction.SUM)
 
 def compute_loss(
-        action_probs:tf.Tensor,
+        action_probs: tf.Tensor,
         values: tf.Tensor,
         returns: tf.Tensor) -> tf.Tensor:
 
@@ -125,34 +148,37 @@ def compute_loss(
 
     critic_loss = huber_loss(values, returns)
 
-    return actor_loss + critic_loss
+    return actor_loss, critic_loss
 
-optimizer = tf.keras.optimizers.Adam(learning_rate=0.01)
 
 @tf.function
 def train_step(
         initial_state: tf.Tensor,
-        model: tf.keras.Model,
-        optimizer: tf.keras.optimizers.Optimizer,
+        actor: tf.keras.Model,
+        critic: tf.keras.Model,
+        opt1: tf.keras.optimizers.Optimizer,
+        opt2: tf.keras.optimizers.Optimizer,
         gamma: float,
         max_steps_per_episode: int) -> tf.Tensor:
 
-    with tf.GradientTape() as tape:
+    with tf.GradientTape(persistent=True) as tape:
         action_probs, values, rewards = run_episde(
-            initial_state, model, max_steps_per_episode)
+            initial_state, actor, critic, max_steps_per_episode)
 
         returns = get_expected_return(rewards, gamma)
 
         action_probs, values, returns = [tf.expand_dims(x, 1) for x in [action_probs, values, returns]]
 
-        loss = compute_loss(action_probs, values, returns)
+        loss_actor, loss_critic = compute_loss(action_probs, values, returns)
 
-    grads = tape.gradient(loss, model.trainable_variables)
-
-    optimizer.apply_gradients(zip(grads, model.trainable_variables))
-
+    grads = tape.gradient(loss_actor, actor.trainable_variables)
+    opt1.apply_gradients(zip(grads, actor.trainable_variables))
+    grads = tape.gradient(loss_critic, critic.trainable_variables)
+    opt2.apply_gradients(zip(grads, critic.trainable_variables))
+    del tape
     episode_reward = tf.math.reduce_sum(rewards)
     return episode_reward
+
 
 max_episodes = 10000
 max_steps_per_episode = 1000
@@ -160,11 +186,19 @@ reward_threshold = 195
 gamma = 0.99
 
 running_reward = 0
+model = ActorCritic(num_actions, num_hidden_units)
+optimizer = tf.keras.optimizers.Adam(learning_rate=0.01)
+
+actor = Actor(num_actions, num_hidden_units)
+critic = Critic(num_hidden_units)
+
+opt1 = tf.keras.optimizers.Adam(learning_rate=0.01)
+opt2 = tf.keras.optimizers.Adam(learning_rate=0.01)
 
 with tqdm.trange(max_episodes) as t:
     for i in t:
         initial_state = tf.constant(env.reset(), dtype=tf.float32)
-        episode_reward = int(train_step(initial_state, model, optimizer, gamma, max_steps_per_episode))
+        episode_reward = int(train_step(initial_state, actor, critic, opt1, opt2, gamma, max_steps_per_episode))
 
         running_reward = episode_reward*0.01 + running_reward * .99
 
