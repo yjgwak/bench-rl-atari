@@ -121,7 +121,7 @@ def compute_loss(
     advantage = returns - values
 
     action_log_probs = tf.math.log(action_probs)
-    actor_loss = -tf.math.reduce_sum(action_probs * advantage)
+    actor_loss = -tf.math.reduce_sum(action_log_probs * advantage)
 
     critic_loss = huber_loss(values, returns)
 

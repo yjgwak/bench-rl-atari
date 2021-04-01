@@ -31,7 +31,7 @@ class ActorCritic(tf.keras.Model):
             Dense(param['actor'][1], activation='relu')
         ])
         self.mu = Dense(param['actor'][2])
-        self.sigma = Dense(param['actor'][3], activation='relu')
+        self.sigma = Dense(param['actor'][3], activation='softplus')
 
         self.critic = tf.keras.Sequential([
             Dense(param['critic'][0], activation='relu'),
@@ -46,50 +46,84 @@ class ActorCritic(tf.keras.Model):
         normal_dist = tfp.distributions.Normal(self.mu(x), self.sigma(x) + eps)
         action_norm = tf.squeeze(normal_dist.sample(1), axis=0)
         action_clipped = tf.clip_by_value(action_norm, *self.action_range)
+        action_prob = tf.clip_by_value(normal_dist.prob(action_clipped), eps, 1.0)
 
-        return action_clipped, self.critic(inputs), normal_dist
+        return action_clipped, action_prob, self.critic(inputs)
+
+def get_expected_return(
+        rewards: tf.Tensor,
+        gamma: float,
+        standarize: bool = True) -> tf.Tensor:
+
+    n = tf.shape(rewards)[0]
+    returns = tf.TensorArray(dtype=tf.float32, size=n)
+
+    rewards = tf.cast(rewards[::-1], dtype=tf.float32)
+    discounted_sum = tf.constant(0.0)
+    discounted_sum_shape = discounted_sum.shape
+    for i in tf.range(n):
+        reward = rewards[i]
+        discounted_sum = reward + gamma + discounted_sum
+        discounted_sum.set_shape(discounted_sum_shape)
+        returns = returns.write(i, discounted_sum)
+    returns = returns.stack()[::-1]
+
+    if standarize:
+        returns = ((returns - tf.math.reduce_mean(returns)) /
+                (tf.math.reduce_std(returns) + eps))
+    return returns
 
 
 def train_step(initial_state: tf.Tensor,
                model: tf.keras.Model,
                optimizer: tf.keras.optimizers.Optimizer):
+
     max_steps = int(1e8)
-
-    rewards = tf.TensorArray(dtype=tf.float32, size=0, dynamic_size=True)
-
-    state = initial_state
-    state = tf.expand_dims(state, 0)
     gamma = 0.99
 
-    for t in tf.range(max_steps):
-        with tf.GradientTape() as tape:
-            action, value, norm = model(state)
-            norm = norm[0, 0]
+    huber_loss = Huber(reduction=tf.keras.losses.Reduction.SUM)
 
-            state, reward, done = tf_env_step(action[0])
+    with tf.GradientTape() as tape:
+        action_probs = tf.TensorArray(dtype=tf.float32, size=0, dynamic_size=True)
+        values = tf.TensorArray(dtype=tf.float32, size=0, dynamic_size=True)
+        rewards = tf.TensorArray(dtype=tf.float32, size=0, dynamic_size=True)
 
-            state = tf.expand_dims(state, 0)
-            _, next_value, _ = model(state)
+        state = initial_state
+        for t in tf.range(max_steps):
+            state = tf.expand_dims(tf.squeeze(state), 0)
+            action, action_prob, value = model(state)
 
-            target = reward + gamma * next_value[0, 0]
-            td_error = target - value[0, 0]
+            values = values.write(t, tf.squeeze(value))
 
-            action_log_prob = tf.math.log(tf.clip_by_value(norm.prob(action[0, 0]), eps, 1.0))
-            loss_actor = -action_log_prob * td_error
-            loss_critic = huber_loss(value, target)
-            # loss = loss_critic
-            loss = loss_actor + loss_critic
+            action_probs = action_probs.write(t, tf.squeeze(action_prob))
 
-        grads = tape.gradient(loss, model.trainable_variables)
-        optimizer.apply_gradients(zip(grads, model.trainable_variables))
+            state, reward, done = tf_env_step(action)
 
-        losses = losses.write(t, norm.mean())
+            rewards = rewards.write(t, reward)
 
-        if tf.cast(done, tf.bool):
-            break
+            if tf.cast(done, tf.bool):
+                break
 
-    rewards = rewards.stack()
+        action_probs = action_probs.stack()
+        values = values.stack()
+        rewards = rewards.stack()
+
+        returns = get_expected_return(rewards, gamma)
+
+        action_probs, values, returns = [tf.expand_dims(x, 1) for x in [action_probs, values, returns]]
+
+        advantages = returns - values
+        action_log_probs = tf.math.log(action_probs)
+        loss_actor = -tf.math.reduce_sum(action_log_probs * advantages)
+        loss_critic = huber_loss(value, returns)
+        loss = loss_actor + loss_critic
+
+    grads = tape.gradient(loss, model.trainable_variables)
+
+    optimizer.apply_gradients(zip(grads, model.trainable_variables))
+
     episode_reward = tf.math.reduce_sum(rewards)
+
     return episode_reward
 
 
@@ -101,7 +135,6 @@ if __name__ == "__main__":
     model = ActorCritic(layer_param, action_range)
 
     optimizer = Adam(learning_rate=0.000001)
-    huber_loss = Huber(reduction=tf.keras.losses.Reduction.SUM)
 
     # Training loop
     gamma = 0.99  # discount factor
@@ -115,69 +148,3 @@ if __name__ == "__main__":
 
             t.set_description(f'Episode {i}')
             t.set_postfix(episode_reward=episode_reward, running_reward=running_reward)
-            #
-            #
-            #
-            # for step in range(max_steps):
-            #     state = tf.expand_dims(state, 0)
-            #     action, value, norm = model(state)
-            #     action_prob = norm.prob(action) + eps
-            #
-            #     values = values.write(step, tf.squeeze(value))
-            #     action_probs = action_probs.write(step, action_prob[0])
-            #     state, reward, done = tf_env_step(action)
-            #     rewards = rewards.write(t, reward)
-            #
-            #     if tf.cast(done, tf.bool):
-            #         break
-            #
-            # t.set_description(f'Episode {i}')
-            # # t.set_postfix()
-            #
-            # # next_state, reward, done = tf_env_step()
-            # while (not done):
-            #     # Sample action according to current policy
-            #     # action.shape = (1,1)
-            #     action = sess.run(action_tf_var, feed_dict={
-            #         state_placeholder: scale_state(state)})
-            #     # Execute action and observe reward & next state from E
-            #     # next_state shape=(2,)
-            #     # env.step() requires input shape = (1,)
-            #     next_state, reward, done, _ = env.step(
-            #         np.squeeze(action, axis=0))
-            #     steps += 1
-            #     reward_total += reward
-            #     # V_of_next_state.shape=(1,1)
-            #     V_of_next_state = sess.run(V, feed_dict=
-            #     {state_placeholder: scale_state(next_state)})
-            #     # Set TD Target
-            #     # target = r + gamma * V(next_state)
-            #     target = reward + gamma * np.squeeze(V_of_next_state)
-            #
-            #     # td_error = target - V(s)
-            #     # needed to feed delta_placeholder in actor training
-            #     td_error = target - np.squeeze(sess.run(V, feed_dict=
-            #     {state_placeholder: scale_state(state)}))
-            #
-            #     # Update actor by minimizing loss (Actor training)
-            #     _, loss_actor_val = sess.run(
-            #         [training_op_actor, loss_actor],
-            #         feed_dict={action_placeholder: np.squeeze(action),
-            #                    state_placeholder: scale_state(state),
-            #                    delta_placeholder: td_error})
-            #     # Update critic by minimizinf loss  (Critic training)
-            #     _, loss_critic_val = sess.run(
-            #         [training_op_critic, loss_critic],
-            #         feed_dict={state_placeholder: scale_state(state),
-            #                    target_placeholder: target})
-            #
-            #     state = next_state
-            #     # end while
-            # episode_history.append(reward_total)
-            # print("Episode: {}, Number of Steps : {}, Cumulative reward: {:0.2f}".format(
-            #     i, steps, reward_total))
-            #
-            # if np.mean(episode_history[-100:]) > 90 and len(episode_history) >= 101:
-            #     print("****************Solved***************")
-            #     print("Mean cumulative reward over 100 episodes:{:0.2f}".format(
-            #         np.mean(episode_history[-100:])))
