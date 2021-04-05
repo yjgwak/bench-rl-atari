@@ -57,7 +57,6 @@ num_actions = env.action_space.n # 2
 num_hidden_units = 128
 
 
-
 def env_step(action: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
 
     state, reward, done, _ = env.step(action)
@@ -124,7 +123,7 @@ def get_expected_return(
     discounted_sum_shape = discounted_sum.shape
     for i in tf.range(n):
         reward = rewards[i]
-        discounted_sum = reward + gamma + discounted_sum
+        discounted_sum = reward + gamma * discounted_sum
         discounted_sum.set_shape(discounted_sum_shape)
         returns = returns.write(i, discounted_sum)
     returns = returns.stack()[::-1]
