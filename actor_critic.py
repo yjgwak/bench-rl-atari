@@ -83,6 +83,7 @@ def run_episde(
     state = initial_state
 
     for t in tf.range(max_steps):
+        # state = tf.concat([state, tf.reshape(tf.random.normal([1,1]), shape=(1,))], axis=0)
         state = tf.expand_dims(state, 0)
         action_logits_t = actor(state)
         value = critic(state)
@@ -181,7 +182,7 @@ def train_step(
 
 max_episodes = 10000
 max_steps_per_episode = 1000
-reward_threshold = 195
+reward_threshold = 199.9
 gamma = 0.99
 
 running_reward = 0
@@ -193,7 +194,7 @@ critic = Critic(num_hidden_units)
 
 opt1 = tf.keras.optimizers.Adam(learning_rate=0.01)
 opt2 = tf.keras.optimizers.Adam(learning_rate=0.01)
-
+writer = tf.summary.create_file_writer("log/cartpole")
 with tqdm.trange(max_episodes) as t:
     for i in t:
         initial_state = tf.constant(env.reset(), dtype=tf.float32)
@@ -203,6 +204,9 @@ with tqdm.trange(max_episodes) as t:
 
         t.set_description(f'Episode {i}')
         t.set_postfix(episode_reward=episode_reward, running_reward=running_reward)
+        with writer.as_default():
+            tf.summary.scalar("reward_ep", episode_reward, step=i)
+            tf.summary.scalar("reward_rn", running_reward, step=i)
         if running_reward > reward_threshold:
             break
 
