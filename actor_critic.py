@@ -2,10 +2,10 @@ from typing import Tuple, List
 
 import gym
 import tqdm as tqdm
-from matplotlib import pyplot as plt
 import tensorflow as tf
 import numpy as np
-from tensorflow.python.layers import layers
+
+from models.Simple import Actor, Critic, ActorCritic
 
 env = gym.make("CartPole-v0")
 
@@ -15,43 +15,6 @@ tf.random.set_seed(seed)
 np.random.seed()
 
 eps = np.finfo(np.float32).eps.item()
-
-
-class Actor(tf.keras.Model):
-    def __init__(self, num_actions: int, num_hidden_units: int):
-        super(Actor, self).__init__()
-        self.common = layers.Dense(num_hidden_units, activation="relu")
-        self.actor = layers.Dense(num_actions)
-
-    def call(self, inputs):
-        x = self.common(inputs)
-        return self.actor(x)
-
-
-class Critic(tf.keras.Model):
-    def __init__(self, num_hidden_units: int):
-        super(Critic, self).__init__()
-        self.common = layers.Dense(num_hidden_units, activation="relu")
-        self.critic = layers.Dense(1)
-
-    def call(self, inputs):
-        x = self.common(inputs)
-        return self.critic(x)
-
-
-class ActorCritic(tf.keras.Model):
-    def __init__(self,
-                 num_actions: int,
-                 num_hidden_units: int):
-        super(ActorCritic, self).__init__()
-        self.common = layers.Dense(num_hidden_units, activation="relu")
-        self.actor = layers.Dense(num_actions)
-        self.critic = layers.Dense(1)
-
-    def call(self, inputs: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor]:
-        x = self.common(inputs)
-        return self.actor(x), self.critic(x)
-
 
 num_actions = env.action_space.n # 2
 num_hidden_units = 128
