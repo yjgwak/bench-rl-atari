@@ -1,5 +1,5 @@
 import tensorflow as tf
-from tf.keras.layers import Dense, Lambda, Input
+from tensorflow.keras.layers import Dense, Lambda, Input
 import numpy as np
 
 

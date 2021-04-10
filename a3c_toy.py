@@ -2,6 +2,9 @@ import tensorflow as tf
 import gym
 import os
 import threading
+import numpy as np
+from models.Simple import ActorCritic
+from a2c_toy import Agent
 
 
 class MasterAgent:
@@ -12,19 +15,25 @@ class MasterAgent:
             os.makedirs(save_dir)
 
         env = gym.make(self.env_name)
-        self.action_size = env.action_space.n
-        self.opt = tf.train.AdamOptimizer(learning_rate=0.001, use_locking=True)
+        self.num_actions = env.action_space.n
 
-        self.global_model = ActorCritic(self.action_size)  # global network
-        self.global_model(tf.constant(np.random.random((1, self.state_size)), dtype=tf.float32))
+        self.global_model = ActorCritic(self.num_actions)  # global network
+        self.optimizer = tf.compat.v1.train.AdamOptimizer(learning_rate=1e-3, use_locking=True)
+        self.global_model(tf.constant(np.random.random((1, 4)), dtype=tf.float32))
 
-    def play(self):
+    def run(self):
+        for i in range(16):
+            local_agent = Worker(i, self.global_model, self.optimizer, self.env_name)
+            local_agent.start()
+
+    def play(self, load=False):
         env = gym.make(self.env_name).unwrapped
         state = env.reset()
         model = self.global_model
-        model_path = os.path.join(self.save_dir, 'model_{}.h5'.format(self.env_name))
-        print('Loading model from: {}'.format(model_path))
-        model.load_weights(model_path)
+        if load:
+            model_path = os.path.join(self.save_dir, 'model_{}.h5'.format(self.env_name))
+            print('Loading model from: {}'.format(model_path))
+            model.load_weights(model_path)
         done = False
         step_counter = 0
         reward_sum = 0
@@ -47,143 +56,98 @@ class MasterAgent:
 
 class Memory:
     def __init__(self):
-        self.states = []
-        self.actions = []
-        self.rewards = []
+        self.step = 0
+        self.action_probs = tf.TensorArray(dtype=tf.float32, size=0, dynamic_size=True)
+        self.values = tf.TensorArray(dtype=tf.float32, size=0, dynamic_size=True)
+        self.rewards = tf.TensorArray(dtype=tf.int32, size=0, dynamic_size=True)
 
-    def store(self, state, action, reward):
-        self.states.append(state)
-        self.actions.append(action)
-        self.rewards.append(reward)
+    def write(self, action_prob, value, reward):
+        self.action_probs = self.action_probs.write(self.step, action_prob)
+        self.values = self.values.write(self.step, value)
+        self.rewards = self.rewards.write(self.step, reward)
+        self.step += 1
 
-    def clear(self):
-        self.states = []
-        self.actions = []
-        self.rewards = []
+    def stack(self):
+        return self.action_probs.stack(), self.values.stack(), self.rewards.stack()
 
 
 class Worker(threading.Thread):
     # Set up global variables across different threads
     global_episode = 0
 
-    # Moving average reward
-    global_moving_average_reward = 0
-    best_score = 0
-    save_lock = threading.Lock()
-
-    def __init__(self, global_model, opt, result_queue, idx, env_name='CartPole-v0', save_dir='tmp'):
+    def __init__(self, idx, global_model, optimizer, env_name='CartPole-v0'):
         super(Worker, self).__init__()
+        self.idx = idx
         self.global_model = global_model
-        self.opt = opt
-        self.result_queue = result_queue
-        self.worker_idx = idx
+        self.optimizer = optimizer
+
         self.env_name = env_name
-
         self.env = gym.make(self.env_name).unwrapped
-        self.action_size = self.env.action_space.n
-
-        self.save_dir = save_dir
-
-        self.local_model = ActorCritic(self.action_size)
-        self.ep_loss = 0.0
+        self.num_actions = self.env.action_space.n
+        self.local_model = ActorCritic(self.num_actions)
 
     def run(self):
-        total_step = 1
-        mem = Memory()
+        max_episodes = 10000
+        max_steps_per_episode = 1000
+        gamma = 0.99
 
-        while Worker.global_episode < args.max_eps:
-            current_state = self.env.reset()
-            mem.clear()
-            ep_reward = 0.
-            ep_steps = 0
-            self.ep_loss = 0
+        done = False
+        while Worker.global_episode < max_episodes and not done:
+            initial_state = tf.constant(self.env.reset(), dtype=tf.float32)
+            with tf.GradientTape() as tape:
+                action_probs, values, rewards = self._run_episode(initial_state, max_steps_per_episode)
+                returns = Agent.get_expected_return(rewards, gamma)
+                action_probs, values, returns = [tf.expand_dims(x, 1) for x in [action_probs, values, returns]]
+                loss = Agent.compute_loss(action_probs, values, returns)
 
-            time_count = 0
-            done = False
-            while not done:
-                action_logits, _ = self.local_model(tf.constant(current_state[None, :], dtype=tf.float32))
-                action = tf.random.categorical(action_logits_t, 1)[0, 0]
-                probs = tf.nn.softmax(action_logits)
+            grads = tape.gradient(loss, self.local_model.trainable_variables)
+            self.optimizer.apply_gradients(zip(grads, self.global_model.trainable_variables))
+            self.local_model.set_weights(self.global_model.get_weights())
+            Worker.global_episode += 1
+            print(f"Episode: {Worker.global_episode}, Reward: {sum(rewards)}")
 
-                action = np.random.choice(self.action_size, p=probs.numpy()[0])
-                new_state, reward, done, _ = self.env.step(action)
-                if done:
-                    reward = -1
-                ep_reward += reward
-                mem.store(current_state, action, reward)
+    def _run_episode(self, initial_state, max_steps_per_episode):
+        action_probs = tf.TensorArray(dtype=tf.float32, size=0, dynamic_size=True)
+        values = tf.TensorArray(dtype=tf.float32, size=0, dynamic_size=True)
+        rewards = tf.TensorArray(dtype=tf.int32, size=0, dynamic_size=True)
 
-                if time_count == args.update_freq or done:
-                    # Calculate gradient wrt to local model. We do so by tracking the
-                    # variables involved in computing the loss by using tf.GradientTape
-                    with tf.GradientTape() as tape:
-                        total_loss = self.compute_loss(done, new_state, mem, args.gamma)
-                    self.ep_loss += total_loss
-                    # Calculate local gradients
-                    grads = tape.gradient(total_loss, self.local_model.trainable_weights)
-                    # Push local gradients to global model
-                    self.opt.apply_gradients(zip(grads, self.global_model.trainable_weights))
-                    # Update local model with new weights
-                    self.local_model.set_weights(self.global_model.get_weights())
+        initial_state_shape = initial_state.shape
+        state = initial_state
 
-                    mem.clear()
-                    time_count = 0
+        for t in tf.range(max_steps_per_episode):
+            state = tf.expand_dims(state, 0)
+            action_logits_t, value = self.local_model(state)
 
-                    if done:  # done and print information
-                        Worker.global_moving_average_reward = \
-                            record(Worker.global_episode, ep_reward, self.worker_idx,
-                                   Worker.global_moving_average_reward, self.result_queue,
-                                   self.ep_loss, ep_steps)
-                        # We must use a lock to save our model and to print to prevent data races.
-                        if ep_reward > Worker.best_score:
-                            with Worker.save_lock:
-                                print("Saving best model to {}, "
-                                      "episode score: {}".format(self.save_dir, ep_reward))
-                                self.global_model.save_weights(
-                                    os.path.join(self.save_dir,
-                                                 'model_{}.h5'.format(self.env_name))
-                                )
-                                Worker.best_score = ep_reward
-                        Worker.global_episode += 1
-                ep_steps += 1
+            action = tf.random.categorical(action_logits_t, 1)[0, 0]
+            action_probs_t = tf.nn.softmax(action_logits_t)
 
-                time_count += 1
-                current_state = new_state
-                total_step += 1
-        self.result_queue.put(None)
+            values = values.write(t, tf.squeeze(value))
 
-    def compute_loss(self, done, new_state, memory, gamma=0.99):
-        if done:
-            reward_sum = 0.  # terminal
-        else:
-            reward_sum = self.local_model(
-                tf.constant(new_state[None, :],
-                                     dtype=tf.float32))[-1].numpy()[0]
+            action_probs = action_probs.write(t, action_probs_t[0, action])
 
-        # Get discounted rewards
-        discounted_rewards = []
-        for reward in memory.rewards[::-1]:  # reverse buffer r
-            reward_sum = reward + gamma * reward_sum
-            discounted_rewards.append(reward_sum)
-        discounted_rewards.reverse()
+            state, reward, done = self._tf_env_step(action)
+            state.set_shape(initial_state_shape)
 
-        logits, values = self.local_model(
-            tf.constant(np.vstack(memory.states),
-                                 dtype=tf.float32))
-        # Get our advantages
-        advantage = tf.constant(np.array(discounted_rewards)[:, None],
-                                         dtype=tf.float32) - values
-        # Value loss
-        value_loss = advantage ** 2
+            rewards = rewards.write(t, reward)
 
-        # Calculate our policy loss
-        actions_one_hot = tf.one_hot(memory.actions, self.action_size, dtype=tf.float32)
+            if tf.cast(done, tf.bool):
+                break
 
-        policy = tf.nn.softmax(logits)
-        entropy = tf.reduce_sum(policy * tf.log(policy + 1e-20), axis=1)
+        action_probs = action_probs.stack()
+        values = values.stack()
+        rewards = rewards.stack()
 
-        policy_loss = tf.nn.softmax_cross_entropy_with_logits_v2(labels=actions_one_hot,
-                                                                 logits=logits)
-        policy_loss *= tf.stop_gradient(advantage)
-        policy_loss -= 0.01 * entropy
-        total_loss = tf.reduce_mean((0.5 * value_loss + policy_loss))
-        return total_loss
+        return action_probs, values, rewards
+
+    def _env_step(self, action):
+        state, reward, done, _ = self.env.step(action)
+        return state.astype(np.float32), np.array(reward, np.int32), np.array(done, np.int32)
+
+    def _tf_env_step(self, action):
+        return tf.numpy_function(self._env_step, [action], [tf.float32, tf.int32, tf.int32])
+
+
+if __name__ == "__main__":
+    agent = MasterAgent()
+    agent.run()
+    # agent.play()
