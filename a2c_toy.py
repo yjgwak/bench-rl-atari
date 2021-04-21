@@ -2,7 +2,7 @@ import gym
 import numpy as np
 import tensorflow as tf
 import tqdm
-from common import get_mc_return, compute_loss
+from common import get_mc_return, compute_loss, get_td_return
 from models.Simple import ActorCritic
 
 
@@ -28,7 +28,7 @@ class Agent:
         tf.random.set_seed(seed)
         np.random.seed()
 
-    def run_episde(self, initial_state, max_steps):
+    def run_episode(self, initial_state, max_steps):
         action_probs = tf.TensorArray(dtype=tf.float32, size=0, dynamic_size=True)
         values = tf.TensorArray(dtype=tf.float32, size=0, dynamic_size=True)
         rewards = tf.TensorArray(dtype=tf.int32, size=0, dynamic_size=True)
@@ -67,9 +67,8 @@ class Agent:
             It's because of the annotation tf.function
         """
         with tf.GradientTape() as tape:
-            action_probs, values, rewards = self.run_episde(initial_state, max_steps_per_episode)
-
-            returns = get_mc_return(rewards, gamma)
+            action_probs, values, rewards = self.run_episode(initial_state, max_steps_per_episode)
+            returns = get_td_return(rewards, values, gamma)
             action_probs, values, returns = [tf.expand_dims(x, 1) for x in [action_probs, values, returns]]
             loss = compute_loss(action_probs, values, returns)
 

@@ -15,20 +15,7 @@ def compute_loss(action_probs, values, returns):
     return actor_loss + critic_loss
 
 
-def get_mc_return_low(rewards, gamma, standarize=True):
-    n = rewards.shape[0]
-    returns = tf.TensorArray(dtype=tf.float32, size=n)
-    returns.write(n-1, rewards[n-1])
-    for i in range(n)[:n-1:-1]:
-        returns.write(i, rewards[i] + gamma * returns[i+1])
-    returns = returns.stack()
-    if standarize:
-        returns = ((returns - tf.math.reduce_mean(returns)) /
-                   (tf.math.reduce_std(returns) + eps))
-    return returns
-
-
-def get_mc_return(rewards, gamma, standarize=True):
+def get_mc_return(rewards, values, gamma, standarize=True):
     n = tf.shape(rewards)[0]
     returns = tf.TensorArray(dtype=tf.float32, size=n)
 
@@ -49,8 +36,12 @@ def get_mc_return(rewards, gamma, standarize=True):
 
 
 def get_td_return(rewards, values, gamma):
-    n = tf.shape(rewards)[0]
-    returns = tf.TensorArray(dtype=tf.float32, size=n)
+    values = values[1:]
+    values = tf.concat([values, tf.constant([0], dtype=tf.float32)], axis=0)
+
+    rewards = tf.cast(rewards, dtype=tf.float32)
+    returns = rewards + (gamma * values)
+    return returns
 
 
 def get_tdl_return(rewards, values, gamma, ld=0.99):
