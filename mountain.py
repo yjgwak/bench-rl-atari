@@ -7,6 +7,7 @@ from tensorflow.python.keras.losses import Huber
 from tensorflow.python.keras.optimizer_v2.adam import Adam
 import tensorflow_probability as tfp
 
+import common
 
 env = gym.make("MountainCarContinuous-v0")
 
@@ -15,7 +16,7 @@ env.seed(seed)
 tf.random.set_seed(seed)
 np.random.seed()
 
-eps = np.finfo(np.float32).eps.item()
+eps = common.eps.item()
 
 
 def env_step(action): # np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
