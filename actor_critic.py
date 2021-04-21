@@ -5,7 +5,8 @@ import tqdm as tqdm
 import tensorflow as tf
 import numpy as np
 
-from models.Simple import Actor, Critic, ActorCritic
+from common import compute_loss, get_mc_return
+from models.Simple import ActorCritic
 
 env = gym.make("CartPole-v0")
 
@@ -13,8 +14,6 @@ seed = 42
 env.seed(seed)
 tf.random.set_seed(seed)
 np.random.seed()
-
-eps = np.finfo(np.float32).eps.item()
 
 num_actions = env.action_space.n # 2
 num_hidden_units = 128
@@ -74,64 +73,13 @@ def run_episde(
     return action_probs, values, rewards
 
 
-def get_expected_return(
-        rewards: tf.Tensor,
-        gamma: float,
-        standarize: bool = True) -> tf.Tensor:
-
-    n = tf.shape(rewards)[0]
-    returns = tf.TensorArray(dtype=tf.float32, size=n)
-
-    rewards = tf.cast(rewards[::-1], dtype=tf.float32)
-    discounted_sum = tf.constant(0.0)
-    discounted_sum_shape = discounted_sum.shape
-    for i in tf.range(n):
-        reward = rewards[i]
-        discounted_sum = reward + gamma * discounted_sum
-        discounted_sum.set_shape(discounted_sum_shape)
-        returns = returns.write(i, discounted_sum)
-    returns = returns.stack()[::-1]
-
-    if standarize:
-        returns = ((returns - tf.math.reduce_mean(returns)) /
-                (tf.math.reduce_std(returns) + eps))
-    return returns
-
-huber_loss = tf.keras.losses.Huber(reduction=tf.keras.losses.Reduction.SUM)
-
-def compute_loss(
-        action_probs: tf.Tensor,
-        values: tf.Tensor,
-        returns: tf.Tensor) -> tf.Tensor:
-
-    advantage = returns - values
-
-    action_log_probs = tf.math.log(action_probs)
-    actor_loss = -tf.math.reduce_sum(action_log_probs * advantage)
-
-    critic_loss = huber_loss(values, returns)
-
-    return actor_loss, critic_loss
-
-
 @tf.function
-def train_step(
-        initial_state: tf.Tensor,
-        actor: tf.keras.Model,
-        critic: tf.keras.Model,
-        opt1: tf.keras.optimizers.Optimizer,
-        opt2: tf.keras.optimizers.Optimizer,
-        gamma: float,
-        max_steps_per_episode: int) -> tf.Tensor:
-
+def train_step(initial_state, actor, critic, opt1, opt2, gamma, max_steps_per_episode):
     with tf.GradientTape(persistent=True) as tape:
-        action_probs, values, rewards = run_episde(
-            initial_state, actor, critic, max_steps_per_episode)
+        action_probs, values, rewards = run_episde(initial_state, actor, critic, max_steps_per_episode)
 
-        returns = get_expected_return(rewards, gamma)
-
+        returns = get_mc_return(rewards, gamma)
         action_probs, values, returns = [tf.expand_dims(x, 1) for x in [action_probs, values, returns]]
-
         loss_actor, loss_critic = compute_loss(action_probs, values, returns)
 
     grads = tape.gradient(loss_actor, actor.trainable_variables)
@@ -151,9 +99,6 @@ gamma = 0.99
 running_reward = 0
 model = ActorCritic(num_actions, num_hidden_units)
 optimizer = tf.keras.optimizers.Adam(learning_rate=0.01)
-
-actor = Actor(num_actions, num_hidden_units)
-critic = Critic(num_hidden_units)
 
 opt1 = tf.keras.optimizers.Adam(learning_rate=0.01)
 opt2 = tf.keras.optimizers.Adam(learning_rate=0.01)

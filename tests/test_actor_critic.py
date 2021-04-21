@@ -9,10 +9,13 @@ from tensorflow.python.keras.layers import Dense
 # from tensorflow.python.keras.optimizer_v2.adam import Adam
 import tensorflow_probability as tfp
 
+import common
+
+
 class Test(TestCase):
     def test_env(self):
         env = gym.make("MountainCarContinuous-v0")
-        eps = np.finfo(np.float32).eps.item()
+        eps = common.eps.item()
 
         class ActorCritic(tf.keras.Model):
             def __init__(self, param: dict):
