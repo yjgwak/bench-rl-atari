@@ -3,9 +3,8 @@ import numpy as np
 import tensorflow as tf
 import tqdm as tqdm
 
+from common import get_mc_return, compute_loss, get_td_return, get_tdl_return
 from models.Simple import ActorCritic
-
-eps = np.finfo(np.float32).eps.item()
 
 
 class Agent:
@@ -18,24 +17,25 @@ class Agent:
         self.optimizer = tf.keras.optimizers.Adam(learning_rate=0.01)
 
     def run(self, max_episodes=10000, max_steps_per_episode=1000, reward_threshold=199.9, gamma=0.99):
-        running_reward = 0
+        ema_reward = 0
         writer = tf.summary.create_file_writer("log/cartpole")
         with tqdm.trange(max_episodes) as t:
             for i in t:
                 initial_state = tf.constant(self.env.reset(), dtype=tf.float32)
-                episode_reward = int(self.train_step(initial_state, gamma, max_steps_per_episode))
-                running_reward = episode_reward * 0.01 + running_reward * .99
+                reward = int(self.train_step(initial_state, gamma, max_steps_per_episode))
+
+                ema_reward = reward * 0.01 + ema_reward * .99
+
                 t.set_description(f'Episode {i}')
-                t.set_postfix(episode_reward=episode_reward, running_reward=running_reward)
+                t.set_postfix(reward=reward, ema_reward=ema_reward)
                 with writer.as_default():
-                    tf.summary.scalar("reward_ep", episode_reward, step=i)
-                    tf.summary.scalar("reward_rn", running_reward, step=i)
+                    tf.summary.scalar("reward_ep", reward, step=i)
                 writer.flush()
 
-                if running_reward > reward_threshold:
+                if ema_reward > reward_threshold:
                     break
 
-            print(f'\n Solved at episode {i}: average reward: {running_reward: .2f}!')
+            print(f'\n Solved at episode {i}: average reward: {ema_reward: .2f}!')
 
     def _set_seed(self):
         seed = 42
@@ -87,9 +87,9 @@ class Agent:
     def train_step(self, initial_state, gamma, max_steps_per_episode):
         with tf.GradientTape() as tape:
             action_probs, values, rewards = self._run_episode(initial_state, max_steps_per_episode)
-            returns = self.get_expected_return(rewards, gamma)
+            returns = get_tdl_return(rewards, values, gamma)
             action_probs, values, returns = [tf.expand_dims(x, 1) for x in [action_probs, values, returns]]
-            loss = self.compute_loss(action_probs, values, returns)
+            loss = compute_loss(action_probs, values, returns)
 
         grads = tape.gradient(loss, self.model.trainable_variables)
         self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
@@ -97,38 +97,7 @@ class Agent:
         episode_reward = tf.math.reduce_sum(rewards)
         return episode_reward
 
-    @staticmethod
-    def get_expected_return(rewards, gamma, standarize=True):
-        n = tf.shape(rewards)[0]
-        returns = tf.TensorArray(dtype=tf.float32, size=n)
-
-        rewards = tf.cast(rewards[::-1], dtype=tf.float32)
-        discounted_sum = tf.constant(0.0)
-        discounted_sum_shape = discounted_sum.shape
-        for i in tf.range(n):
-            reward = rewards[i]
-            discounted_sum = reward + gamma * discounted_sum
-            discounted_sum.set_shape(discounted_sum_shape)
-            returns = returns.write(i, discounted_sum)
-        returns = returns.stack()[::-1]
-
-        if standarize:
-            returns = ((returns - tf.math.reduce_mean(returns)) / (tf.math.reduce_std(returns) + eps))
-        return returns
-
-    @staticmethod
-    def compute_loss(action_probs, values, returns):
-        advantage = returns - values
-
-        action_log_probs = tf.math.log(action_probs)
-        actor_loss = -tf.math.reduce_sum(action_log_probs * advantage)
-
-        huber_loss = tf.keras.losses.Huber(reduction=tf.keras.losses.Reduction.SUM)
-        critic_loss = huber_loss(values, returns)
-
-        return actor_loss + critic_loss
-
 
 if __name__ == "__main__":
     agent = Agent()
-    agent.run()
+    agent.run(reward_threshold=195)

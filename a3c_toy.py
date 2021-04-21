@@ -96,7 +96,7 @@ class Worker(threading.Thread):
             initial_state = tf.constant(self.env.reset(), dtype=tf.float32)
             with tf.GradientTape() as tape:
                 action_probs, values, rewards = self._run_episode(initial_state, max_steps_per_episode)
-                returns = Agent.get_expected_return(rewards, gamma)
+                returns = Agent.get_mc_return(rewards, gamma)
                 action_probs, values, returns = [tf.expand_dims(x, 1) for x in [action_probs, values, returns]]
                 loss = Agent.compute_loss(action_probs, values, returns)
 
