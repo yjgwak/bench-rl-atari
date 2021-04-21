@@ -45,5 +45,6 @@ def get_td_return(rewards, values, gamma):
 
 
 def get_tdl_return(rewards, values, gamma, ld=0.99):
+    # TODO: express as matrix form
     n = tf.shape(rewards)[0]
     returns = tf.TensorArray(dtype=tf.float32, size=n)
