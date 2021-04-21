@@ -31,12 +31,7 @@ def tf_env_step(action: tf.Tensor) -> List[tf.Tensor]:
     return tf.numpy_function(env_step, [action], [tf.float32, tf.int32, tf.int32])
 
 
-def run_episde(
-        initial_state: tf.Tensor,
-        actor: tf.keras.Model,
-        critic: tf.keras.Model,
-        max_steps: int) -> List[tf.Tensor]:
-
+def run_episde(initial_state, model, max_steps):
     action_probs = tf.TensorArray(dtype=tf.float32, size=0, dynamic_size=True)
     values = tf.TensorArray(dtype=tf.float32, size=0, dynamic_size=True)
     rewards = tf.TensorArray(dtype=tf.int32, size=0, dynamic_size=True)
@@ -45,10 +40,8 @@ def run_episde(
     state = initial_state
 
     for t in tf.range(max_steps):
-        # state = tf.concat([state, tf.reshape(tf.random.normal([1,1]), shape=(1,))], axis=0)
         state = tf.expand_dims(state, 0)
-        action_logits_t = actor(state)
-        value = critic(state)
+        action_logits_t, value = model(state)
 
         action = tf.random.categorical(action_logits_t, 1)[0, 0]
         action_probs_t = tf.nn.softmax(action_logits_t)
@@ -69,44 +62,39 @@ def run_episde(
     values = values.stack()
     rewards = rewards.stack()
 
-
     return action_probs, values, rewards
 
 
 @tf.function
-def train_step(initial_state, actor, critic, opt1, opt2, gamma, max_steps_per_episode):
-    with tf.GradientTape(persistent=True) as tape:
-        action_probs, values, rewards = run_episde(initial_state, actor, critic, max_steps_per_episode)
+def train_step(initial_state, model, optimizer, gamma, max_steps_per_episode):
+    with tf.GradientTape() as tape:
+        action_probs, values, rewards = run_episde(initial_state, model, max_steps_per_episode)
 
         returns = get_mc_return(rewards, gamma)
         action_probs, values, returns = [tf.expand_dims(x, 1) for x in [action_probs, values, returns]]
-        loss_actor, loss_critic = compute_loss(action_probs, values, returns)
+        loss = compute_loss(action_probs, values, returns)
 
-    grads = tape.gradient(loss_actor, actor.trainable_variables)
-    opt1.apply_gradients(zip(grads, actor.trainable_variables))
-    grads = tape.gradient(loss_critic, critic.trainable_variables)
-    opt2.apply_gradients(zip(grads, critic.trainable_variables))
-    del tape
+    grads = tape.gradient(loss, model.trainable_variables)
+    optimizer.apply_gradients(zip(grads, model.trainable_variables))
+
     episode_reward = tf.math.reduce_sum(rewards)
     return episode_reward
 
 
 max_episodes = 10000
 max_steps_per_episode = 1000
-reward_threshold = 199.9
+reward_threshold = 195
 gamma = 0.99
 
 running_reward = 0
 model = ActorCritic(num_actions, num_hidden_units)
 optimizer = tf.keras.optimizers.Adam(learning_rate=0.01)
 
-opt1 = tf.keras.optimizers.Adam(learning_rate=0.01)
-opt2 = tf.keras.optimizers.Adam(learning_rate=0.01)
 writer = tf.summary.create_file_writer("log/cartpole")
 with tqdm.trange(max_episodes) as t:
     for i in t:
         initial_state = tf.constant(env.reset(), dtype=tf.float32)
-        episode_reward = int(train_step(initial_state, actor, critic, opt1, opt2, gamma, max_steps_per_episode))
+        episode_reward = int(train_step(initial_state, model, optimizer, gamma, max_steps_per_episode))
 
         running_reward = episode_reward*0.01 + running_reward * .99
 

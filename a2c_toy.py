@@ -78,13 +78,12 @@ class Agent:
         episode_reward = tf.math.reduce_sum(rewards)
         return episode_reward
 
-    def train(self):
+    def train(self, reward_threshold=195):
         max_episodes = 10000
         max_steps_per_episode = 1000
-        reward_threshold = 199.9
         gamma = 0.99
-        ema_reward = 0
 
+        ema_reward = 0
         writer = tf.summary.create_file_writer("log/cartpole")
         with tqdm.trange(max_episodes) as t:
             for i in t:
